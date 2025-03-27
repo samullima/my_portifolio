@@ -1,7 +1,6 @@
-<h2>Projeto</h2>
+<h1>Projetos</h1>
 <br/>
 
-<h1>Projects</h1>
 <!-- .projects>article*6>h2>lorem4^img[src="https://i.etsystatic.com/iap/a0f246/5502938083/iap_640x640.5502938083_69958kp0.jpg"]+p>lorem -->
 <div class="projects">
     <article>
