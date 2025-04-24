@@ -67,6 +67,8 @@
     $: maxDatePlusOne = new Date(maxDate);
     $: maxDatePlusOne.setDate(maxDatePlusOne.getDate() + 1);
 
+    let clickedCommits = [];
+    let commitProgress = 100;
     let filteredCommits;
     $: timeScale = d3.scaleTime().domain([minDate,maxDatePlusOne]).range([0,100]);
     $: commitMaxTime = timeScale.invert(commitProgress);
@@ -154,10 +156,6 @@
         }
 
     }
-
-    let clickedCommits = [];
-
-    let commitProgress = 100;
 
     </script>
 
