@@ -1,7 +1,15 @@
 <script>
     import * as d3 from "d3";
     import { onMount } from "svelte";
-    
+
+    import {
+        computePosition,
+        autoPlacement,
+        offset,
+    } from '@floating-ui/dom';
+
+    import Bar from '$lib/Bar.svelte';
+
     let data = [];
     let width = 1000, height = 600;
     let commits = [];
@@ -18,10 +26,9 @@
     let xAxis, yAxis;
     let xAxisGridlines, yAxisGridlines;
     
-    
     onMount(async () => {
     
-        data = await d3.csv("./loc.csv", row => ({
+        data = await d3.csv("/loc.csv", row => ({
             ...row,
             line: Number(row.line), // or just +row.line
             depth: Number(row.depth),
@@ -30,24 +37,26 @@
             datetime: new Date(row.datetime)
         }));
         commits = d3.groups(data, d => d.commit).map(([commit, lines]) => {
-        let first = lines[0];
-        let {author, date, time, timezone, datetime} = first;
-        let ret = {
-            id: commit,
-            url: "https://github.com/samullima/my_portifolio/commit/" + commit,
-            author, date, time, timezone, datetime,
-            hourFrac: datetime.getHours() + datetime.getMinutes() / 60,
-            totalLines: lines.length
-        };
-    
-        // Like ret.lines = lines
-        // but non-enumerable so it doesn’t show up in JSON.stringify
-        Object.defineProperty(ret, "lines", {
-            value: lines,
-            configurable: true,
-            writable: true,
-            enumerable: false,
-        });
+            let first = lines[0];
+            let {author, date, time, timezone, datetime} = first;
+            let ret = {
+                id: commit,
+                url: "https://github.com/samullima/my_portifolio/commit/" + commit,
+                author, date, time, timezone, datetime,
+                hourFrac: datetime.getHours() + datetime.getMinutes() / 60,
+                totalLines: lines.length
+            };
+        
+            // Like ret.lines = lines
+            // but non-enumerable so it doesn’t show up in JSON.stringify
+            Object.defineProperty(ret, "lines", {
+                value: lines,
+                configurable: true,
+                writable: true,
+                enumerable: false,
+            });
+
+        commits = d3.sort(commits, d => -d.totalLines);
     
         return ret;
     });
@@ -57,6 +66,14 @@
     $: maxDate = d3.max(commits.map(d => d.date));
     $: maxDatePlusOne = new Date(maxDate);
     $: maxDatePlusOne.setDate(maxDatePlusOne.getDate() + 1);
+
+    let filteredCommits;
+    $: timeScale = d3.scaleTime().domain([minDate,maxDatePlusOne]).range([0,100]);
+    $: commitMaxTime = timeScale.invert(commitProgress);
+    $: filteredCommits = commits.filter(commit => (commit.datetime < commitMaxTime))
+
+    let filteredData;
+    $: filteredData = data.filter(data => (data.datetime < commitMaxTime))
     
     $: xScale = d3.scaleTime()
                   .domain([minDate, maxDatePlusOne])
@@ -66,6 +83,12 @@
     $: yScale = d3.scaleLinear()
                   .domain([24, 0])
                   .range([height, 0]);
+
+    $: rScale = d3.scaleSqrt()
+                .domain(d3.extent(commits.map(d=>d.totalLines)))
+                .range([2, 30]);
+
+                  
     $: {
         d3.select(xAxis).call(d3.axisBottom(xScale));
         d3.select(yAxis).call(d3.axisLeft(yScale));
@@ -81,14 +104,63 @@
         );
     }
 
+    $: allTypes = Array.from(new Set(data.map(d => d.type)));
+
+    $: selectedLines = (clickedCommits.length > 0 ? clickedCommits : filteredCommits).flatMap(d => d.lines);
+
+    $: selectedCounts = d3.rollup(
+        selectedLines,
+        v => v.length,
+        d => d.type
+    );
+
+    $: languageBreakdown = allTypes.map(type => [type, selectedCounts.get(type) || 0]);
+
     let hoveredIndex = -1;
-    $: hoveredCommit = commits[hoveredIndex] ?? hoveredCommit ?? {};
+    $: hoveredCommit = filteredCommits[hoveredIndex] ?? hoveredCommit ?? {};
 
     let cursor = {x: 0, y: 0};
+    
+    let tooltipPosition = {x: 0, y: 0};
 
+    let commitTooltip;
 
+    async function dotInteraction (index, evt) {
+        let hoveredDot = evt.target;
+        if (evt.type === "mouseenter") {
+            hoveredIndex = index;
+            cursor = {x: evt.x, y: evt.y};
+            tooltipPosition = await computePosition(hoveredDot, commitTooltip, {
+                strategy: "fixed", // because we use position: fixed
+                middleware: [
+                    offset(5), // spacing from tooltip to dot
+                    autoPlacement() // see https://floating-ui.com/docs/autoplacement
+                ],
+            });        }
+        else if (evt.type === "mouseleave") {
+            hoveredIndex = -1
+        }
+
+        else if (evt.type === "click") {
+            let commit = commits[index]
+            if (!clickedCommits.includes(commit)) {
+                // Add the commit to the clickedCommits array
+                clickedCommits = [...clickedCommits, commit];
+            }
+            else {
+                    // Remove the commit from the array
+                    clickedCommits = clickedCommits.filter(c => c !== commit);
+            }
+        }
+
+    }
+
+    let clickedCommits = [];
+
+    let commitProgress = 100;
 
     </script>
+
     <svelte:head>
     <title>Meta</title>
     </svelte:head>
@@ -101,17 +173,20 @@
     <g transform="translate({usableArea.left}, 0)" bind:this={yAxis} />
     
     <g class="dots">
-    {#each commits as commit, index }
+    {#each filteredCommits as commit, index}
         <circle
+            on:mouseenter={evt => dotInteraction(index, evt)}
+            on:mouseleave={evt => dotInteraction(index, evt)}
             cx={ xScale(commit.datetime) }
             cy={ yScale(commit.hourFrac) }
-            r="5"
+            r={ rScale(commit.totalLines) }
             fill="steelblue"
-            on:mouseenter={evt => {
-                hoveredIndex = index;
-                cursor = {x: evt.x, y: evt.y};
-            }}
-            on:mouseleave={evt => hoveredIndex = -1}
+            fill-opacity="0.5"
+
+            on:click={ evt => dotInteraction(index, evt) }
+
+            class:selected={ clickedCommits.includes(commit) }
+    
         />
     {/each}
     </g>
@@ -120,8 +195,17 @@
 
     </svg>
 
-    <dl class="info tooltip" hidden={hoveredIndex === -1} style="top: {cursor.y}px; left: {cursor.x}px">
+    <div class="slider-container">
+        <div class="slider">
+            <label for="slider">Show commits until:</label>
+            <input type="range" id="slider" name="slider" min=0 max=100 bind:value={commitProgress}/>
+        </div>
+        <time class="time-label">{commitMaxTime.toLocaleString()}</time>
+    </div>
 
+    <Bar data={languageBreakdown} width={width} />
+
+    <dl class="info tooltip" hidden={hoveredIndex === -1} style="top: {tooltipPosition.y}px; left: {tooltipPosition.x}px" bind:this={commitTooltip}>
 
         <dt>Commit</dt>
         <dd><a href="{ hoveredCommit.url }" target="_blank">{ hoveredCommit.id }</a></dd>
@@ -143,11 +227,11 @@
         <dl class="stats">
         <dt>Total <abbr title="Lines of code">LOC</abbr></dt>
         
-        <dd>{data.length}</dd>
+        <dd>{filteredData.length}</dd>
         <dt>Files</dt>
-        <dd>{d3.groups(data, d => d.file).length}</dd>
+        <dd>{d3.groups(filteredData, d => d.file).length}</dd>
         <dt>Commits</dt>
-        <dd>{d3.groups(data, d => d.commit).length}</dd>
+        <dd>{d3.groups(filteredData, d => d.commit).length}</dd>
         </dl>
     </section>
     
@@ -221,19 +305,35 @@
     }
 
     circle {
-    transition: 200ms;
+        transition: 200ms;
 
+        @starting-style {
+            r: 0;
+        }   
 
-    &:hover {
-        transform: scale(1.5);
+        &:hover {
+            transform: scale(1.5);
+        }
+            transform-origin: center;
+            transform-box: fill-box; 
     }
-    transform-origin: center;
-    transform-box: fill-box;
-
+    .selected {
+        fill: red;
     }
 
-    
-
+    .slider-container{
+	    display:grid;
+    }
+    .slider{
+        display: flex;
+    }
+    #slider{
+        flex:1;
+    }
+    .time-label{
+        font-size: 0.75em;
+        text-align: right;
+    }
 
 
     </style>
